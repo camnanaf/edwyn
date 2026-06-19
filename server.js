@@ -159,24 +159,49 @@ app.get('/', (req, res) => {
 // 3. Build the Playback Reconstruction Engine
 app.get('/view-version/:folderName', (req, res) => {
   const folderName = req.params.folderName;
+  const timestamp = folderName.replace('version-', ''); // Get the exact historical time
+  
   const pointerPath = path.join(__dirname, 'vault', folderName, 'index.html.pointer');
   const realHtmlPath = path.join(__dirname, 'vault', folderName, 'index.html');
 
-  // Deterministic Playback Rule: If the file was deduplicated, reconstruct it on the fly!
+  let rawHtml = '';
+
+  // 1. Reconstruct the deduplicated file on the fly
   if (fs.existsSync(pointerPath)) {
     const pointerContent = fs.readFileSync(pointerPath, 'utf8');
     const fileHash = pointerContent.replace('REF:', '').trim();
-    const masterAssetPath = path.join(__dirname, 'objects', fileHash);
-    
-    res.setHeader('Content-Type', 'text/html');
-    return res.sendFile(masterAssetPath);
-  } 
-  
-  if (fs.existsSync(realHtmlPath)) {
-    return res.sendFile(realHtmlPath);
+    rawHtml = fs.readFileSync(path.join(__dirname, 'objects', fileHash), 'utf8');
+  } else if (fs.existsSync(realHtmlPath)) {
+    rawHtml = fs.readFileSync(realHtmlPath, 'utf8');
+  } else {
+    return res.status(404).send('Snapshot file missing.');
   }
 
-  res.status(404).send('Snapshot file missing.');
+  // 2. DETEKTMINISTIC PLAYBACK INJECTION
+  // We inject a small script into the old HTML before showing it.
+  // This script intercepts any network calls and tacks on our time token!
+  const injectionScript = `
+    <script>
+      window.__ARCHIVE_TIMESTAMP__ = "${timestamp}";
+      console.log("⏱️ Archive Sandbox Active. Locked to timestamp: " + window.__ARCHIVE_TIMESTAMP__);
+      
+      // Hijack the browser's standard 'fetch' command for API sandboxing
+      const originalFetch = window.fetch;
+      window.fetch = function(url, options = {}) {
+        const separator = url.includes('?') ? '&' : '?';
+        // Force the request to route through our historical database time-proxy
+        const timeTravelUrl = url + separator + 'archive_snapshot=' + window.__ARCHIVE_TIMESTAMP__;
+        return originalFetch(timeTravelUrl, options);
+      };
+    </script>
+  `;
+
+  // Insert our sandbox script right at the top of the webpage head
+  const sandboxedHtml = rawHtml.replace('<head>', '<head>' + injectionScript);
+  
+  res.setHeader('Content-Type', 'text/html');
+  res.send(sandboxedHtml);
 });
+
 
 app.listen(3000, () => console.log('Advanced Deduplication Storage Engine Live on Port 3000'));
