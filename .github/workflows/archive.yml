@@ -20,5 +20,6 @@ jobs:
     - name: Push to Archive Receiver
       run: |
         curl -X POST \
+          -H "X-Site-ID: edwyn" \
           -F "website_zip=@website.zip" \
           https://icky-steadily-coil.ngrok-free.dev/archive-push

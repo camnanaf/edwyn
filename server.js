@@ -28,54 +28,53 @@ function getFileHash(filePath) {
 }
 
 app.post('/archive-push', upload.single('website_zip'), (req, res) => {
+  // Grab the unique site identification tag sent by the pipeline (defaults to 'default-site')
+  const siteId = req.headers['x-site-id'] || 'default-site';
   const timestamp = Date.now();
   const zipPath = req.file.path;
-  const targetFolder = path.join(VAULT_DIR, `version-${timestamp}`);
+  
+  // Create a separate, isolated folder compartment for this specific site
+  const siteVaultDir = path.join(VAULT_DIR, `site-${siteId}`);
+  const targetFolder = path.join(siteVaultDir, `version-${timestamp}`);
 
   try {
-    // 1. Extract incoming snapshot
+    fs.ensureDirSync(siteVaultDir);
+    
+    // 1. Extract snapshot to its dedicated compartment
     const zip = new AdmZip(zipPath);
     zip.extractAllTo(targetFolder, true);
-    fs.unlinkSync(zipPath); // Clear the zip
+    fs.unlinkSync(zipPath);
 
-    console.log(`\n📦 Processing incoming version-${timestamp}...`);
+    console.log(`\n🏢 [Tenant: ${siteId}] Processing incoming version-${timestamp}...`);
 
-    // 2. Scan every file in the newly extracted folder
+    // 2. Scan and deduplicate assets inside this tenant's folder
     const files = fs.readdirSync(targetFolder);
-    
     files.forEach(fileName => {
       const currentFilePath = path.join(targetFolder, fileName);
-      
-      // Skip folders, only scan actual files
       if (fs.statSync(currentFilePath).isDirectory()) return;
 
-      // 3. Find the file's fingerprint
       const fileHash = getFileHash(currentFilePath);
       const masterStoragePath = path.join(OBJECTS_DIR, fileHash);
 
-      // 4. Deduplication Logic
       if (fs.existsSync(masterStoragePath)) {
-        // We ALREADY have this file saved in our master library!
-        console.log(`➡️  Duplicate found for [${fileName}]. Referencing master storage.`);
-        fs.unlinkSync(currentFilePath); // Delete the local duplicate copy safely
-        
-        // Save a tiny text file pointing to the master file instead
+        console.log(`➡️  [${siteId}] Duplicate asset [${fileName}]. Referencing master storage.`);
+        fs.unlinkSync(currentFilePath);
         fs.writeFileSync(currentFilePath + '.pointer', `REF:${fileHash}`);
       } else {
-        // This is a BRAND NEW change or new file. Save it to master storage!
-        console.log(`✨ New asset detected [${fileName}]. Saving fingerprint: ${fileHash.substring(0, 8)}...`);
+        console.log(`✨ [${siteId}] New asset [${fileName}]. Saving fingerprint.`);
         fs.copySync(currentFilePath, masterStoragePath);
       }
     });
 
-    console.log(`✅ Version ${timestamp} optimized and stored perfectly.`);
-    res.status(201).json({ status: "VERIFIED_AND_STORED", version: timestamp });
+    console.log(`✅ [Tenant: ${siteId}] Version optimized and stored perfectly.`);
+    res.status(201).json({ status: "VERIFIED_AND_STORED", site: siteId, version: timestamp });
 
   } catch (error) {
-    console.error('Storage Engine Failure:', error);
+    console.error(`Multi-Tenant Engine Failure for ${siteId}:`, error);
     res.status(500).send('Storage engine error.');
   }
 });
+
 
 // 1. Tell the server where to find your master deduplicated files
 app.use('/objects', express.static(path.join(__dirname, 'objects')));
@@ -114,7 +113,8 @@ app.get('/', (req, res) => {
         <div class="slider-box">
           <div>Viewing Version Archived At: <span id="timeLabel" class="timestamp">Loading...</span></div>
           <input type="range" id="timeSlider" min="0" max="${versions.length - 1}" value="${versions.length - 1}">
-        </div>
+		  <button id="compareBtn" style="margin-top: 15px; padding: 8px 15px; background: #0066cc; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold;">Compare with Previous Version</button>
+		</div>
 
         <h3>Live Replay Canvas:</h3>
         <div id="canvasContainer">
@@ -150,6 +150,19 @@ app.get('/', (req, res) => {
           slider.addEventListener('input', (e) => updatePlayback(e.target.value));
           updatePlayback(slider.value); // Load the latest version on launch
         }
+		const compareBtn = document.getElementById('compareBtn');
+		compareBtn.addEventListener('click', () => {
+			const currentIndex = parseInt(slider.value);
+			if (currentIndex <= 0) {
+			alert("This is your very first version! There is no previous history to compare it to yet.");
+			return;
+		}
+		const previousFolder = versions[currentIndex - 1];
+		const currentFolder = versions[currentIndex];
+  
+		// Open our comparison tool inside a neat popup tab
+		window.open(\`/compare/\${previousFolder}/\${currentFolder}\`, '_blank');
+});
       </script>
     </body>
     </html>
@@ -203,5 +216,64 @@ app.get('/view-version/:folderName', (req, res) => {
   res.send(sandboxedHtml);
 });
 
+const Diff = require('diff'); // Our new text diffing package
+
+// Build the Code Comparison Engine
+app.get('/compare/:v1/:v2', (req, res) => {
+  const { v1, v2 } = req.params;
+
+  // Helper function to extract code from real file or pointer file
+  function getCode(folderName) {
+    const pointerPath = path.join(__dirname, 'vault', folderName, 'index.html.pointer');
+    const realHtmlPath = path.join(__dirname, 'vault', folderName, 'index.html');
+    
+    if (fs.existsSync(pointerPath)) {
+      const fileHash = fs.readFileSync(pointerPath, 'utf8').replace('REF:', '').trim();
+      return fs.readFileSync(path.join(__dirname, 'objects', fileHash), 'utf8');
+    } else if (fs.existsSync(realHtmlPath)) {
+      return fs.readFileSync(realHtmlPath, 'utf8');
+    }
+    return '';
+  }
+
+  const oldCode = getCode(v1);
+  const newCode = getCode(v2);
+
+  // Compare the words between the two versions
+  const changes = Diff.diffWords(oldCode, newCode);
+
+  // Render a clean comparison output window
+  let diffHtml = '';
+  changes.forEach((part) => {
+    // Green background for added words, red for deleted words, normal for unchanged words
+    const color = part.added ? '#e6ffec' : part.removed ? '#ffebe9' : 'transparent';
+    const textDecoration = part.removed ? 'line-through' : 'none';
+    const border = part.added ? '1px solid #acf2bd' : part.removed ? '1px solid #fdb8c0' : 'none';
+    
+    // Clean up basic HTML characters so they render as readable text blocks
+    const cleanText = part.value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    
+    diffHtml += `<span style="background: ${color}; text-decoration: ${textDecoration}; border: ${border}; padding: 2px; border-radius: 3px; font-family: monospace; white-space: pre-wrap;">${cleanText}</span>`;
+  });
+
+  res.send(`
+    <html>
+    <head>
+      <title>Code Comparison</title>
+      <style>
+        body { font-family: system-ui, sans-serif; padding: 20px; line-height: 1.6; background: #fafafa; }
+        .diff-container { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.05); }
+        h2 { margin-top: 0; color: #333; border-bottom: 2px solid #eaeaea; padding-bottom: 10px; }
+      </style>
+    </head>
+    <body>
+      <div class="diff-container">
+        <h2>🔍 Change Report: Comparing ${v1} ➔ ${v2}</h2>
+        <div>${diffHtml}</div>
+      </div>
+    </body>
+    </html>
+  `);
+});
 
 app.listen(3000, () => console.log('Advanced Deduplication Storage Engine Live on Port 3000'));
