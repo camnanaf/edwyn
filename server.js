@@ -33,6 +33,7 @@ app.post('/archive-push', upload.single('website_zip'), (req, res) => {
     fs.unlinkSync(zipPath); 
 
     res.status(200).send(`Version ${timestamp} archived perfectly.`);
+	res.status(201).json({ status: "VERIFIED_AND_STORED", version: timestamp });
   } catch (error) {
     console.error('Extraction failed:', error);
     res.status(500).send('Failed to process archive.');

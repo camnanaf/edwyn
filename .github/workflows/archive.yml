@@ -1,0 +1,24 @@
+name: Push Version to History Engine
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  archive:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    - name: Create Dummy Database File If Missing
+      run: touch production.db
+
+    - name: Zip Website and Database
+      run: zip -r website.zip ./index.html ./production.db
+
+    - name: Push to Archive Receiver
+      run: |
+        curl -X POST \
+          -F "website_zip=@website.zip" \
+          https://https://icky-steadily-coil.ngrok-free.dev/
