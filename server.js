@@ -77,4 +77,106 @@ app.post('/archive-push', upload.single('website_zip'), (req, res) => {
   }
 });
 
+// 1. Tell the server where to find your master deduplicated files
+app.use('/objects', express.static(path.join(__dirname, 'objects')));
+
+// 2. Build the Time-Travel Homepage UI
+app.get('/', (req, res) => {
+  const vaultPath = path.join(__dirname, 'vault');
+  
+  // Read all saved versions in your vault folder
+  let versions = [];
+  if (fs.existsSync(vaultPath)) {
+    versions = fs.readdirSync(vaultPath).filter(f => f.startsWith('version-'));
+  }
+
+  // Generate a clean HTML dashboard with a Time Slider
+  res.send(`
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>⏱️ Perfect Website History Engine</title>
+      <style>
+        body { font-family: system-ui, sans-serif; padding: 40px; background: #f4f4f9; color: #333; }
+        .card { background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); max-width: 800px; margin: 0 auto; }
+        h1 { margin-top: 0; color: #111; }
+        .slider-box { margin: 30px 0; background: #eef2f7; padding: 20px; border-radius: 8px; text-align: center; }
+        input[type=range] { width: 100%; margin-top: 15px; }
+        iframe { width: 100%; height: 400px; border: 2px solid #ddd; border-radius: 8px; background: white; }
+        .timestamp { font-weight: bold; color: #0066cc; font-size: 1.2em; }
+      </style>
+    </head>
+    <body>
+      <div class="card">
+        <h1>⏱️ Website History Time-Traveler</h1>
+        <p>Drag the slider below to step through every single update before it went live.</p>
+        
+        <div class="slider-box">
+          <div>Viewing Version Archived At: <span id="timeLabel" class="timestamp">Loading...</span></div>
+          <input type="range" id="timeSlider" min="0" max="${versions.length - 1}" value="${versions.length - 1}">
+        </div>
+
+        <h3>Live Replay Canvas:</h3>
+        <div id="canvasContainer">
+          <p id="noVersions" style="display:none;">No historical snapshots found in vault yet.</p>
+          <iframe id="playbackFrame" src=""></iframe>
+        </div>
+      </div>
+
+      <script>
+        // Pass our backend version folders straight into the browser JavaScript
+        const versions = ${JSON.stringify(versions)};
+        const slider = document.getElementById('timeSlider');
+        const label = document.getElementById('timeLabel');
+        const iframe = document.getElementById('playbackFrame');
+
+        if (versions.length === 0) {
+          document.getElementById('noVersions').style.display = 'block';
+          iframe.style.display = 'none';
+          slider.style.disabled = true;
+        } else {
+          function updatePlayback(index) {
+            const folderName = versions[index];
+            // Extract the original timestamp number from the folder name
+            const ms = parseInt(folderName.replace('version-', ''));
+            const date = new Date(ms).toLocaleString();
+            
+            label.innerText = date;
+            
+            // Route the iframe to load the preview helper endpoint
+            iframe.src = '/view-version/' + folderName;
+          }
+
+          slider.addEventListener('input', (e) => updatePlayback(e.target.value));
+          updatePlayback(slider.value); // Load the latest version on launch
+        }
+      </script>
+    </body>
+    </html>
+  `);
+});
+
+// 3. Build the Playback Reconstruction Engine
+app.get('/view-version/:folderName', (req, res) => {
+  const folderName = req.params.folderName;
+  const pointerPath = path.join(__dirname, 'vault', folderName, 'index.html.pointer');
+  const realHtmlPath = path.join(__dirname, 'vault', folderName, 'index.html');
+
+  // Deterministic Playback Rule: If the file was deduplicated, reconstruct it on the fly!
+  if (fs.existsSync(pointerPath)) {
+    const pointerContent = fs.readFileSync(pointerPath, 'utf8');
+    const fileHash = pointerContent.replace('REF:', '').trim();
+    const masterAssetPath = path.join(__dirname, 'objects', fileHash);
+    
+    res.setHeader('Content-Type', 'text/html');
+    return res.sendFile(masterAssetPath);
+  } 
+  
+  if (fs.existsSync(realHtmlPath)) {
+    return res.sendFile(realHtmlPath);
+  }
+
+  res.status(404).send('Snapshot file missing.');
+});
+
 app.listen(3000, () => console.log('Advanced Deduplication Storage Engine Live on Port 3000'));
