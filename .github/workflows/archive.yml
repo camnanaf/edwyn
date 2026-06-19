@@ -21,4 +21,4 @@ jobs:
       run: |
         curl -X POST \
           -F "website_zip=@website.zip" \
-          https://icky-steadily-coil.ngrok-free.dev/
+          https://icky-steadily-coil.ngrok-free.dev/archive-push
